@@ -1,0 +1,343 @@
+---
+title: "Perkins Loan Program Visualizations"
+author: "Gordon Fleetwood"
+date: "October 4, 2015"
+output: html_document
+---
+
+##Introduction
+
+This is my first project for NYC Data Science's Bootcamp. In it I visually explore data on the schools which utilize the United States' [Perkins Loan Program](http://www.ifap.ed.gov/ifap/byAwardYear.jsp?type=perkinscdrguide&set=current&display=single). The data from three school years - 11/12, 12/13, and 13/14 - is the basis of my exploration.
+
+##Initial Data Munging
+
+Reading in the data and looking at the columns shows that there are a few columns from each data frame which are understandably different.
+
+```{r,message=FALSE}
+library(dplyr)
+library(choroplethr)
+library(choroplethrMaps)
+library(ggplot2)
+library(openxlsx)
+
+perkins1112 = read.xlsx('perkins-data/1112PerkinsCDR.xlsx')
+perkins1213 = read.xlsx('perkins-data/1213PerkinsCDR.xlsx')
+perkins1314 = read.xlsx('perkins-data/1314PerkinsCDR.xlsx')
+
+names(perkins1112)
+names(perkins1213)
+names(perkins1314)
+```
+
+That's the first thing for me to fix.
+
+```{r}
+rename.columns =      c('Serial',
+                       'OPEID',
+                       'Institution.Name',
+                       'Address',
+                       'City',
+                       'ST',
+                       'Zip',
+                       'Bwrs.Who.Started.Repayment.Previous.School.Year',
+                       'Bwrs.In.Default.On.June30',
+                       'Cohort.Default.Rate',
+                       'Bwrs.In.Default.For.At.Least.240.Days',
+                       'Principal.Outstanding.On.Loans.In.Default.For.At.Least.240.Days')
+
+names(perkins1112) = names(perkins1213) = names(perkins1314) = rename.columns
+```
+
+Now I want to join all the dataframes together. First I have to add a column to each which will mark the year each data point belongs to.
+
+```{r}
+perkins1112$year='2011-2012'
+perkins1213$year='2012-2013'
+perkins1314$year='2013-2014'
+perkins.data = rbind(perkins1112,perkins1213,perkins1314)
+
+#Checking to see that nothing has gone wrong with respect to the number of rows.
+nrow(perkins.data)==nrow(perkins1112)+nrow(perkins1213)+nrow(perkins1314)
+```
+
+A look at the classes of each column shows that I have more cleaning to do.
+
+```{r}
+sapply(perkins.data, class)
+```
+
+I want the columns which should be numeric to actually be numeric.
+
+```{r}
+perkins.data[,
+             c("Bwrs.Who.Started.Repayment.Previous.School.Year",
+               "Bwrs.In.Default.On.June30",
+               "Bwrs.In.Default.For.At.Least.240.Days",
+               "Principal.Outstanding.On.Loans.In.Default.For.At.Least.240.Days")] = 
+  sapply(perkins.data[,
+                      c("Bwrs.Who.Started.Repayment.Previous.School.Year",
+                        "Bwrs.In.Default.On.June30",
+                        "Bwrs.In.Default.For.At.Least.240.Days",
+                        "Principal.Outstanding.On.Loans.In.Default.For.At.Least.240.Days")],
+         as.numeric)
+
+#Removing % signs from values and converting to ratios.
+perkins.data[,"Cohort.Default.Rate"] = 
+  sapply(
+    perkins.data[,"Cohort.Default.Rate"],
+    (function(x) sub('%','',x)))
+
+perkins.data[,"Cohort.Default.Rate"] = 
+  sapply(
+    perkins.data[,"Cohort.Default.Rate"],
+    as.numeric)
+
+#Converting from percentage to rate.
+perkins.data[,"Cohort.Default.Rate"] = 
+  sapply(
+    perkins.data[,"Cohort.Default.Rate"],
+    (function(x) x/100))
+```
+
+Given the form of the data, I want maps to be a part of my visualization stack. The choroplethr library makes this simple. I borrowed the inbuilt state.regions dataframe from the library to prepare my Perkins Loan data to be shown on a map.
+
+```{r}
+data(state.regions)
+perkins.data = merge(perkins.data, state.regions, by.x='ST', by.y='abb')
+```
+
+To finish up, I convert my dataframe to a tabledf for faster dplyr processing.
+
+```{r}
+perkins.data = tbl_df(perkins.data)
+```
+
+##Aggregating Borrowers In Severe Default By Year
+
+Borrowers in default for more than 240 days provides the richest info in the data, so I'll concentrate my efforts there. A look at all the borrowers across the three years shows an increase in the number of these defaulters across the US.
+
+```{r, echo=FALSE}
+yearly.data.borrowers = group_by(perkins.data,year) %>%
+  summarise(.,
+            value=sum(Bwrs.In.Default.For.At.Least.240.Days))
+
+ggplot(data=yearly.data.borrowers,aes(x=year,y=value)) +
+  geom_bar(stat="identity", fill="white", colour="darkgreen") +
+  geom_text(data = yearly.data.borrowers,
+            aes(y=value-1e5, x=year, label = formatC(value, format="d", big.mark=','),size=8),
+            color=I('black'), show_guide  = F) +
+  theme_bw() +
+  ggtitle('Borrowers In Default After 240 Days') + 
+  xlab('Year') + 
+  ylab('Number of Borrowers')
+```
+
+##Aggregating The Principal Associated With The Borrowers Above
+
+The principal for these borrowers shows the same trend.
+
+```{r, echo=FALSE}
+yearly.data.principal = group_by(perkins.data,year) %>%
+  summarise(.,
+            value=sum(Principal.Outstanding.On.Loans.In.Default.For.At.Least.240.Days))
+
+ggplot(data=yearly.data.principal ,aes(x=year,y=value)) +
+  geom_bar(stat="identity") +
+  geom_text(data = yearly.data.principal,
+            aes(y=value-1e8, x=year, label = paste('$',formatC(value, format="d", big.mark=',')),size=8),
+            color=I('white'), show_guide  = F) +
+  theme_bw() +
+  ggtitle('Principal Owed After 240 Days In Default') + 
+  xlab('Year') + 
+  ylab('Total Principal Owed ($)')
+```
+
+##Preparation for State Level Data
+
+Before I start making choropleth maps, I need to add some more data to my dataframe, specifically adding the state populations to aid comparisons by reducing the effects of differences in sample sizes. Since the school years and the years for census data are different, I'll average the populations of consecutive years to use for the loans data.
+
+```{r}
+state.pop =  read.csv('perkins-data/statepop.csv',stringsAsFactors = FALSE)
+state.pop$State = sapply(state.pop$State,(function(x) tolower(x)))
+state.pop = subset(state.pop, select = -c(Census,Estimates.Base))
+state.pop[,-1] = sapply(state.pop[,-1],(function(x) gsub(',','',x)))
+state.pop[,-1] = sapply(state.pop[,-1],as.numeric)
+state.pop['11-12'] = ceiling((state.pop[,'X2011']+state.pop[,'X2012'])/2)
+state.pop['12-13'] = ceiling((state.pop[,'X2012']+state.pop[,'X2013'])/2)
+state.pop['13-14'] = ceiling((state.pop[,'X2013']+state.pop[,'X2014'])/2)
+state.pop = state.pop[,c(1,7,8,9)]
+
+states=unique(state.pop$State)
+region = rep(states,3)
+
+test = data.frame(region)
+test$pop = 0 
+test$year = 0 
+test[1:51,2] = state.pop[,2]
+test[1:51,3] = "11-12"
+test[52:102,2] = state.pop[,3]
+test[52:102,3] = "12-13"
+test[103:153,2] = state.pop[,4]
+test[103:153,3] = "13-14"
+
+state.data = group_by(perkins.data,region,year)
+state.data.with.pop = inner_join(state.data,
+                                 test,
+                                 by=c("region","year"))
+```
+
+##Exploring Loan Data By State
+
+Now that that's done I can get the business of making choropleth maps for each year in the data. Instead of using the features provided by the data set, I'll combine to maximize the information being conferred by each visualization. (This is not an arbitrary choice. There was little variation in maps based on single features.)
+
+First I'll look at the Cohort Default Rate by 1,000,000 inhabitants of each state.
+
+```{r, echo=FALSE}
+state.data.plot.1.0 = summarise(subset(state.data.with.pop,year=='11-12'),
+                             value=1000000*sum(Bwrs.In.Default.On.June30)/sum(Bwrs.Who.Started.Repayment.Previous.School.Year)/min(pop))
+
+data(continental_us_states)
+data(df_pop_state)
+
+# state_choropleth(state.data.plot.1.0,
+#                  title      = "Default Rate (2011-12)",
+#                  legend     = "Default Rate Per Million Inhabitants",
+#                  num_colors = 9)
+
+state_choropleth(df_pop_state,
+                 title         = "US 2012 State Population Estimates",
+                 legend        = "Population",
+                 zoom          = continental_us_states,
+                 reference_map = TRUE)
+
+
+
+```
+
+```{r, echo=FALSE}
+state.data.plot.1.1 = summarise(subset(state.data.with.pop,year=='12-13'),
+                             value=1000000*sum(Bwrs.In.Default.On.June30)/sum(Bwrs.Who.Started.Repayment.Previous.School.Year)/min(pop))
+
+state_choropleth(state.data.plot.1.1,
+                 title      = "Default Rate (2012-13)",
+                 legend     = "Default Rate Per Million Inhabitants",
+                 num_colors = 9)
+```
+
+```{r, echo=FALSE}
+state.data.plot.1.2 = summarise(subset(state.data.with.pop,year=='13-14'),
+                                value=1000000*sum(Bwrs.In.Default.On.June30)/sum(Bwrs.Who.Started.Repayment.Previous.School.Year)/min(pop))
+
+state_choropleth(state.data.plot.1.2,
+                 title      = "Default Rate (2013-14)",
+                 legend     = "Default Rate Per Million Inhabitants",
+                 num_colors = 9)
+```
+
+Most of the variation is seen in the Northwest United States with very little change elsewhere. There Wyoming, Montana, and North Dakota lead the defaults rates. Vermont in the Northeast follows suit. Places like california, Texas, and Florida are at the other end of the spectrum.
+
+Next I move on the the defaulters in dire straits. These borrowers have been in default for at least 240 days, and the principal of their loans is provided. My point of exploration is the average principal per borrower per million inhabitants of each state.
+
+```{r, echo=FALSE}
+state.data.plot.2.0 = summarise(subset(state.data.with.pop,year=='11-12'),
+                                value=1000000*(sum(Principal.Outstanding.On.Loans.In.Default.For.At.Least.240.Days)/sum(Bwrs.In.Default.For.At.Least.240.Days))/min(pop))
+
+state_choropleth(state.data.plot.2.0,
+                 title      = "Principal to Borrowers Ratio For Those In Default For More Than 240 Days By State (2011-12)",
+                 legend     = "Principal to Borrowers Ratio Per Million Inhabitants",
+                 num_colors = 9)
+```
+
+```{r, echo=FALSE}
+state.data.plot.2.1 = summarise(subset(state.data.with.pop,year=='12-13'),
+                                value=1000000*sum(Principal.Outstanding.On.Loans.In.Default.For.At.Least.240.Days)/sum(Bwrs.In.Default.For.At.Least.240.Days-Bwrs.In.Default.On.June30)/min(pop))
+
+state_choropleth(state.data.plot.2.1,
+                 title      = "Principal to Borrowers Ratio For Those In Default For More Than 240 Days (2012-13)",
+                 legend     = "Principal to Borrowers Ratio Per Million Inhabitants",
+                 num_colors = 9)
+```
+
+```{r, echo=FALSE}
+state.data.plot.2.2 = summarise(subset(state.data.with.pop,year=='13-14'),
+                                value=1000000*sum(Principal.Outstanding.On.Loans.In.Default.For.At.Least.240.Days)/sum(Bwrs.In.Default.For.At.Least.240.Days)/min(pop))
+
+state_choropleth(state.data.plot.2.2,
+                 title      = "Principal to Borrowers Ratio For Those In Default For More Than 240 Days (2013-14)",
+                 legend     = "Principal to Borrowers Ratio Per Million Inhabitants",
+                 num_colors = 9)
+```
+
+It's pretty much the same story as before. Delaware improved its lot over the three year period, though.
+
+##Exploration At The College Level
+
+I started with looking at yearly data, then data by state, and I want to end at seeing which colleges stand out across all the years of data. Again I concentrate on defaulters who based the 240 day mark. Below lies a scatterplot of every data point. I arbitrarily used 15 million dollars as the "High Debt" treshold because all the outliers seemed to exist beyond it.
+
+```{r, echo=FALSE}
+high.debt = subset(  perkins.data,
+                     perkins.data$Principal.Outstanding.On.Loans.In.Default.For.At.Least.240.Days >= 1.5e7)
+
+ggplot(data=perkins.data,
+       aes(x=Bwrs.In.Default.For.At.Least.240.Days-200,
+           y=Principal.Outstanding.On.Loans.In.Default.For.At.Least.240.Days)) +
+  geom_point(col=I('blue'),size=2) +
+  geom_point(data=high.debt, aes(colour = Institution.Name),size=3) +
+  geom_text(data = high.debt, 
+            aes(y=Principal.Outstanding.On.Loans.In.Default.For.At.Least.240.Days,
+                x=Bwrs.In.Default.For.At.Least.240.Days+280,
+                label = paste(ST,year,sep=', '),size=4),show_guide  = F) +
+  ggtitle('Status After 240 Days In Default') +
+  xlab('Number of Borrowers') +
+  ylab('Principal Owed ($)') +
+  scale_colour_discrete(name = "Colleges") +
+  theme(legend.justification = c(1, 0), legend.position = c(1, 0))
+```
+
+Most of the data lies in the square bounded by 5,000 borrowers and roughly 12 million dollars. Perhaps surprsingly, most of the standout states from previous visualizations don't show up in the outliers. The exception is Rhode Island which has Johnson and Wales University sticking out like a sore thumb from the latest year of data. 
+
+Pennsylvania's Drexel university is an oddity is the relatively small number of defaulters compared to its gigantic debt in 2013-2014. Its debt for the other two years is around the 2.3 million dollar mark, so I wonder what happened in the transition from 2012-13 to 2013-14.
+
+New York's Central CUNY University is there as well. From personal knowledge, I wonder if the colleges under the CUNY umbrella are being grouped together.
+
+The King of the debtors is Devry University. The data only lists it as being in Chicago, Illinois, but it extremely value on the graph makes me wonder if there is more aggregation going on than meets the eye.
+
+Looking at the extremes at a state level to see if specific colleges drive the debt accumulation is an interesting prospect.
+
+```{r}
+state.data.13.14 = group_by(subset(perkins.data,year=='13-14'),region) %>%
+                      summarise(.,total.principal=sum(Principal.Outstanding.On.Loans.In.Default.For.At.Least.240.Days)) 
+
+print('State with the least principal in intense default: ')
+arrange(state.data.13.14,total.principal)[1,]
+
+print('State with the most principal in intense default: ')
+arrange(state.data.13.14,desc(total.principal))[1,]
+```
+
+Nevada has the least principal but also has only four colleges in the data set. This makes it not very interesting. After hiding under the radar in most of the visualizations, New York now stands front and center as the state with the most debt in intense default. I wonder which colleges most contribute to this. 
+
+```{r, echo=FALSE}
+ny.data.13.14 = subset(perkins.data,ST=='NY' & year=='13-14')
+
+high.debt.ny = subset(ny.data.13.14,
+                      ny.data.13.14$Principal.Outstanding.On.Loans.In.Default.For.At.Least.240.Days >= 5e6)
+
+ggplot(data=ny.data.13.14,
+       aes(x=Bwrs.In.Default.For.At.Least.240.Days-200,
+           y=Principal.Outstanding.On.Loans.In.Default.For.At.Least.240.Days)) +
+  geom_point(col=I('blue'),size=2) +
+  geom_point(data=high.debt.ny, aes(colour = Institution.Name),size=3) +
+  ggtitle('Status After 240 Days In Default In NY') +
+  xlab('Number of Borrowers') +
+  ylab('Principal Owed ($)') +
+  scale_colour_discrete(name = "Colleges") +
+  theme(legend.justification = c(1, 0), legend.position = c(1, 0))
+```
+
+Another arbitrary choice of 5 million dollars as the high debt threshold shows CUNY (no surprise there), Columbia, and NYU driving the debt of defaulters who have been in default for at least 240 days.
+
+##End Notes
+
+Revisting this data with information on income and cost of living may be a future path to explore.
+

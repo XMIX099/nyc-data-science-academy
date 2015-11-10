@@ -1,0 +1,188 @@
+---
+title: "Data Driven Kickstarter"
+author: "Gordon Fleetwood"
+date: "November 1, 2015"
+output: html_document
+---
+
+As a initial foray into what I eventually want to do with this data, I will build a naive Logistic Regression model to see whether or not I can predict if a Kickstarter project will be funded or not. I'm going to see how accurate I can be on the training data itself without doing a train-test split.  
+
+A more conventional workflow starting with data exploration and more robust model building will come later.
+
+```{r}
+library(caret)
+library(dplyr)
+library(ggplot2)
+
+kickstarter = read.csv('kickstarter_data.csv', stringsAsFactors = FALSE)
+#Remove index and project name columns
+kickstarter = kickstarter[,-c(1,8)] 
+```
+
+I first take a look at my data.
+
+```{r}
+str(kickstarter)
+summary(kickstarter)
+sapply(kickstarter, class)
+```
+
+There are no missing values and it looks like the Category feature should be a factor.
+
+```{r}
+kickstarter$Category = as.factor(kickstarter$Category)
+```
+
+Next I explore if any currency conversion will be necessary.
+
+```{r}
+unique(kickstarter$Currency)
+```
+
+It's all U.S dollars in this tiny subset of the data. I'll skip the thought process for curreny conversion for now and drop the column.
+
+```{r}
+kickstarter = kickstarter[,-4]
+```
+
+I want to see the unique time remaining values, i.e. days, minutes, hours, etc.
+
+```{r}
+process_type = function(x) {
+  result = strsplit(substr(gsub("'|,", "", x),2,nchar(gsub("'|,", "", x))-1), " ")
+  result.wanted = result[[1]][[2]]
+  return(result.wanted)
+}
+
+unique(sapply(kickstarter$Time_Remaining, process_type))
+```
+
+There are only days, minutes, and hours. I now create a new column with all the times converted to seconds.
+
+```{r}
+time.seconds = function(x){
+  x.list = strsplit(substr(gsub("'|,", "", x),2,nchar(gsub("'|,", "", x))-1), " ")
+  num = as.numeric(x.list[[1]][[1]])
+  freq = x.list[[1]][[2]]
+  
+  if (freq == 'minutes') return (num*60)
+  if (freq == 'hours') return (num*360)
+  if (freq == 'days') return (num*24*360)
+}
+
+kickstarter$Time.Seconds = sapply(kickstarter$Time_Remaining, time.seconds)
+kickstarter = kickstarter[,-9] #Remove previous time remaining column
+
+length(unique(kickstarter$Time.Seconds))
+```
+
+A count of the unique values of the new columns shows that a lot of granularity is lost in the way a project's remaining time is reported. That is, two projects may have two days left to be funded, but there may be actually be a couple of hours difference between their deadlines.
+
+Eventually I want to create two models--one for numeric features and the other for text-- and combine the results to make a final prediction. For now I'll just work with numeric features.
+
+```{r}
+numeric.model.data = kickstarter[,-1] #Removes 'About' column.
+text.model.data = kickstarter[,c(1,4)] #Keeps 'About' and 'Funded' columns.
+```
+
+I'll start with a logistic regression model on the numeric data. First I'll get a baseline accuracy for comparison.
+
+```{r}
+table(numeric.model.data$Funded)/nrow(numeric.model.data)
+```
+
+So if I predicted that a project wouldn't be funded I'd be right around 60% of the time. Let's see if my naive model can do better.
+
+```{r}
+model.logit = glm(Funded ~ .- Amount.Pledged, 
+                  family = "binomial", 
+                  data = numeric.model.data)
+```
+
+Now to assessing model fit.
+
+```{r}
+scatter.smooth(model.logit$fit,
+               residuals(model.logit, type = "deviance"),
+               lpars = list(col = "red"),
+               xlab = "Fitted Probabilities",
+               ylab = "Deviance Residual Values",
+               main = "Residual Plot for\nLogistic Regression of Numeric Kickstarter Data")
+abline(h = 0, lty = 2)
+
+library(car)
+influencePlot(model.logit)
+summary(model.logit) 
+```
+
+The models look pretty good with most of the predictors being significant. The McFadden's pseudo R^2 is also relatively high at 0.46.
+
+```{r}
+1 - model.logit$deviance/model.logit$null.deviance
+```
+
+Now to see compare my accuracy against the baseline.
+
+```{r}
+results.table = table(truth = numeric.model.data$Funded, 
+                      prediction = round(model.logit$fitted.values))
+results.table
+
+(results.table[[1]]+results.table[[4]])/sum(results.table)
+```
+
+I got an increase of 23% accurracy with this model over the 60% baseline. That's not too bad.
+
+When I return to this analysis I'll try another algorithm such as Decision Trees or Random Forests. As aforementioned, the textual analysis will come later as well, and I expect this to be extremely important.
+
+```{r}
+library(tm)
+corpus = Corpus(VectorSource(text.model.data$About))
+corpus[[1]]
+
+corpus = tm_map(corpus, tolower)
+corpus = tm_map(corpus, PlainTextDocument)
+corpus = tm_map(corpus, removePunctuation)
+corpus = tm_map(corpus, removeWords, stopwords("english"))
+corpus = tm_map(corpus, stemDocument)
+corpus[[1]]
+```
+
+
+```{r}
+dtm = DocumentTermMatrix(corpus)
+dtm
+
+# Remove sparse terms
+dtm = removeSparseTerms(dtm, 0.97)
+dtm
+
+# Create data frame
+labeledTerms = as.data.frame(as.matrix(dtm))
+```
+
+```{r}
+labeledTerms$responsive = text.model.data$Funded
+str(labeledTerms)
+```
+
+```{r}
+library(caTools)
+set.seed(144)
+spl = sample.split(labeledTerms$responsive, 0.7)
+train = subset(labeledTerms, spl == TRUE)
+test = subset(labeledTerms, spl == FALSE)
+
+library(rpart)
+library(rpart.plot)
+emailCART = rpart(responsive~., data=train, method="class")
+prp(emailCART)
+
+pred = predict(emailCART, newdata=test)
+pred[1:10,]
+pred.prob = pred[,2]
+table(test$responsive, pred.prob >= 0.5)
+
+table(test$Funded)
+```
+

@@ -4,9 +4,7 @@ library(shiny)
 library(plotly)
 library(ggplot2)
 
-#py <- plotly(username="Razinho", key="xrewy9o2vv", base_url="https://plot.ly")
 source("plotlyGraphWidget.R")
-#setwd('C:/Users/Gordon/Documents/Bootcamp/projects/project2/my-app')
 executions = read.csv('data/executions.data.final.csv')
 
 state.executions = group_by(executions,State) %>% summarise(.,count=n())
